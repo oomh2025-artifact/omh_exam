@@ -11,7 +11,6 @@
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    .markdown-input { font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; }
   </style>
 </head>
 <body>
@@ -21,219 +20,26 @@
     const { useState, useRef, useEffect } = React;
 
     // ストレージキー
-    const STORAGE_KEY = 'ohc-exam-review-items';
-    const API_KEY_STORAGE = 'ohc-exam-api-key';
-    const CUSTOM_QUESTIONS_KEY = 'ohc-exam-custom-questions';
-
-    // 採点用システムプロンプト
-    const GRADING_SYSTEM_PROMPT = `あなたは労働衛生コンサルタント口述試験の採点者です。
-
-【試験官の4つの評価軸】
-①知識の深さ：暗記ではなく理解しているか。背景・理由を説明できるか。
-②実務での対応力：現場でコンサルティングできるか。現実的制約への配慮があるか。
-③判断の誠実さ：わからないことを正直に言えるか。知ったかぶりをしないか。
-④思考の柔軟性：想定外の質問にも対応できるか。複数の可能性を考えられるか。
-
-【加点ポイント】
-・3管理（作業環境管理・作業管理・健康管理）のフレームワークを使った整理
-・具体的な数値・基準の提示
-・最新の制度・改正への言及
-・複数の可能性の列挙
-・小規模企業・現実的制約への配慮
-
-【減点ポイント】
-・「思います」の多用（断定すべき場面で曖昧）
-・聞かれていないことを答えて間違える
-・「一般的には」で逃げて具体性がない
-・「安全です」と不用意に断言
-
-10点満点で採点してください。
-【採点基準】
-10点:完璧（全ての評価軸で優れている）
-8-9点:優秀（主要なポイントを網羅）
-6-7点:合格（必須要素を含み、大きな誤りなし）
-4-5点:一部正解（重要な要素が欠けている）
-2-3点:方向性のみ（理解が表面的）
-0-1点:的外れ
-
-必ず以下の形式で回答：
-点数: [0-10]
-講評: [具体的なフィードバック、100字以内]`;
-
-    // サンプルMarkdownテンプレート
-    const SAMPLE_MARKDOWN = `## テーマX：新しいテーマ名
-
----
-
-### 【予想問題 XX】Q1（基本問題）
-**ここに質問文を記載してください。**
-
-### 【模範解答】
-ここに模範解答を記載してください。
-
-### 【この問題で試験官が見ているポイント】
-- 評価ポイント1
-- 評価ポイント2
-
-### 【想定される追加質問と回答】
-
-**Q：追加質問1**
-
-**A：** 追加質問1への回答
-
----
-
-### 【予想問題 XX】Q2（詳細問題）
-**ここに詳細問題の質問文を記載してください。**
-
-### 【模範解答】
-ここに模範解答を記載してください。
-
-### 【この問題で試験官が見ているポイント】
-- 評価ポイント1
-- 評価ポイント2
-
-### 【想定される追加質問と回答】
-
-**Q：追加質問1**
-
-**A：** 追加質問1への回答`;
-
-    // マークダウンパーサー（本編用）
-    const parseMainQuestionsMarkdown = (markdown) => {
-      const themes = [];
-      let currentTheme = null;
-      let currentQuestion = null;
-      let currentSection = null;
-      let currentFollowUp = null;
-      
-      const lines = markdown.split('\n');
-      
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        
-        const themeMatch = line.match(/^##\s*テーマ\d*[：:]?\s*(.+?)$/);
-        if (themeMatch) {
-          if (currentTheme && currentTheme.questions.length > 0) {
-            themes.push(currentTheme);
-          }
-          currentTheme = { id: themes.length + 1, name: themeMatch[1].trim(), questions: [] };
-          currentQuestion = null;
-          currentSection = null;
-          continue;
-        }
-        
-        const questionMatch = line.match(/###\s*【予想問題\s*\d+】\s*Q?(\d+)?[（(]?(基本|詳細|応用)?問題?[）)]?/i) ||
-                             line.match(/\*\*Q\d+[（(](基本|詳細|応用)問題[）)][：:]\*\*/);
-        if (questionMatch && currentTheme) {
-          if (currentQuestion) currentTheme.questions.push(currentQuestion);
-          const level = questionMatch[2] || questionMatch[1] || '基本';
-          currentQuestion = { 
-            level: level, 
-            question: '', 
-            modelAnswer: '', 
-            keyPoints: [], 
-            followUpQA: [],
-            followUpQuestions: []
-          };
-          currentSection = 'question';
-          continue;
-        }
-        
-        if (currentSection === 'question' && line.startsWith('**') && !line.includes('【')) {
-          const questionText = line.replace(/^\*\*/, '').replace(/\*\*$/, '').trim();
-          if (questionText && !questionText.includes('Q：') && !questionText.includes('A：')) {
-            currentQuestion.question = questionText;
-          }
-          continue;
-        }
-        
-        if (line.includes('【模範解答】') || line.includes('### 【模範解答】')) { 
-          currentSection = 'modelAnswer'; 
-          continue; 
-        }
-        if (line.includes('試験官が見ているポイント')) { 
-          currentSection = 'keyPoints'; 
-          continue; 
-        }
-        if (line.includes('想定される追加質問と回答')) { 
-          currentSection = 'followUpQA'; 
-          continue; 
-        }
-        if (line.includes('想定される追加質問')) { 
-          currentSection = 'followUp'; 
-          continue; 
-        }
-        
-        if (currentSection === 'followUpQA' && currentQuestion) {
-          const followUpQ = line.match(/^\*\*Q[：:]\s*(.+?)\*\*$/);
-          if (followUpQ) {
-            if (currentFollowUp && currentFollowUp.answer) {
-              currentQuestion.followUpQA.push(currentFollowUp);
-              currentQuestion.followUpQuestions.push(currentFollowUp.question);
-            }
-            currentFollowUp = { question: followUpQ[1].trim(), answer: '' };
-            continue;
-          }
-          const followUpA = line.match(/^\*\*A[：:]\*\*\s*(.*)$/);
-          if (followUpA && currentFollowUp) {
-            currentFollowUp.answer = followUpA[1].trim();
-            continue;
-          }
-          if (currentFollowUp && !line.startsWith('**') && !line.startsWith('#') && !line.startsWith('---') && line.trim()) {
-            currentFollowUp.answer += ' ' + line.trim();
-          }
-        }
-        
-        if (line.trim() === '---') {
-          if (currentFollowUp && currentQuestion && currentFollowUp.answer) {
-            currentQuestion.followUpQA.push(currentFollowUp);
-            currentQuestion.followUpQuestions.push(currentFollowUp.question);
-            currentFollowUp = null;
-          }
-          continue;
-        }
-        
-        if (currentQuestion && currentSection) {
-          const cleanLine = line.trim();
-          if (!cleanLine) continue;
-          
-          if (currentSection === 'modelAnswer' && !cleanLine.startsWith('**') && !cleanLine.startsWith('#') && !cleanLine.startsWith('---')) {
-            currentQuestion.modelAnswer += (currentQuestion.modelAnswer ? '\n' : '') + cleanLine;
-          } else if (currentSection === 'keyPoints' && (cleanLine.startsWith('-') || cleanLine.startsWith('・'))) {
-            currentQuestion.keyPoints.push(cleanLine.replace(/^[-・]\s*/, ''));
-          } else if (currentSection === 'followUp' && (cleanLine.startsWith('-') || cleanLine.startsWith('・'))) {
-            const q = cleanLine.replace(/^[-・]\s*/, '').replace(/[「」]/g, '');
-            currentQuestion.followUpQuestions.push(q);
-          }
-        }
-      }
-      
-      if (currentFollowUp && currentQuestion && currentFollowUp.answer) {
-        currentQuestion.followUpQA.push(currentFollowUp);
-        currentQuestion.followUpQuestions.push(currentFollowUp.question);
-      }
-      if (currentQuestion && currentTheme) currentTheme.questions.push(currentQuestion);
-      if (currentTheme && currentTheme.questions.length > 0) themes.push(currentTheme);
-      
-      return themes;
+    const STORAGE_KEYS = {
+      review: 'ohc-exam-review-items',
+      customThemes: 'ohc-exam-custom-themes',
+      customFollowUps: 'ohc-exam-custom-followups'
     };
 
-    // マークダウンパーサー（追加問題用）
-    const parseExtraQuestionsMarkdown = (markdown) => {
+    // マークダウンパーサー
+    const parseQuestionsMarkdown = (markdown) => {
       const themes = [];
       let currentTheme = null;
       let currentQuestion = null;
       let currentSection = null;
-      let currentFollowUp = null;
       
       const lines = markdown.split('\n');
       
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         
-        const themeMatch = line.match(/^##\s*テーマ\d*[：:]?\s*(.+?)$/);
-        if (themeMatch) {
+        const themeMatch = line.match(/^##\s*(?:テーマ\d+[：:]\s*)?(.+?)$/);
+        if (themeMatch && !line.includes('【予想問題') && !line.includes('第') && !line.includes('章')) {
           if (currentTheme && currentTheme.questions.length > 0) {
             themes.push(currentTheme);
           }
@@ -242,60 +48,20 @@
           continue;
         }
         
-        const questionMatch = line.match(/###\s*【追加問題\s*\d+】/);
+        const questionMatch = line.match(/\*\*Q\d+[（(](基本|詳細|応用)問題[）)][：:]\*\*/);
         if (questionMatch && currentTheme) {
           if (currentQuestion) currentTheme.questions.push(currentQuestion);
-          currentQuestion = { 
-            level: '追加', 
-            question: '', 
-            modelAnswer: '', 
-            keyPoints: [], 
-            followUpQA: [],
-            followUpQuestions: []
-          };
+          currentQuestion = { level: questionMatch[1], question: '', modelAnswer: '', keyPoints: [], followUpQuestions: [] };
           currentSection = 'question';
-          continue;
-        }
-        
-        if (currentSection === 'question' && line.startsWith('**') && !line.includes('【')) {
-          const questionText = line.replace(/^\*\*/, '').replace(/\*\*$/, '').trim();
-          if (questionText && !questionText.includes('Q：') && !questionText.includes('A：')) {
-            currentQuestion.question = questionText;
-          }
           continue;
         }
         
         if (line.includes('【模範解答】')) { currentSection = 'modelAnswer'; continue; }
         if (line.includes('試験官が見ているポイント')) { currentSection = 'keyPoints'; continue; }
-        if (line.includes('想定される追加質問と回答')) { currentSection = 'followUpQA'; continue; }
         if (line.includes('想定される追加質問')) { currentSection = 'followUp'; continue; }
-        
-        if (currentSection === 'followUpQA' && currentQuestion) {
-          const followUpQ = line.match(/^\*\*Q[：:]\s*(.+?)\*\*$/);
-          if (followUpQ) {
-            if (currentFollowUp && currentFollowUp.answer) {
-              currentQuestion.followUpQA.push(currentFollowUp);
-              currentQuestion.followUpQuestions.push(currentFollowUp.question);
-            }
-            currentFollowUp = { question: followUpQ[1].trim(), answer: '' };
-            continue;
-          }
-          const followUpA = line.match(/^\*\*A[：:]\*\*\s*(.*)$/);
-          if (followUpA && currentFollowUp) {
-            currentFollowUp.answer = followUpA[1].trim();
-            continue;
-          }
-          if (currentFollowUp && !line.startsWith('**') && !line.startsWith('#') && !line.startsWith('---') && line.trim()) {
-            currentFollowUp.answer += ' ' + line.trim();
-          }
-        }
-        
-        if (line.trim() === '---') {
-          if (currentFollowUp && currentQuestion && currentFollowUp.answer) {
-            currentQuestion.followUpQA.push(currentFollowUp);
-            currentQuestion.followUpQuestions.push(currentFollowUp.question);
-            currentFollowUp = null;
-          }
+        if (line.trim() === '---' || line.trim() === '') continue;
+        if (line.includes('【予想問題')) {
+          if (currentQuestion) { currentTheme.questions.push(currentQuestion); currentQuestion = null; }
           continue;
         }
         
@@ -303,7 +69,9 @@
           const cleanLine = line.trim();
           if (!cleanLine) continue;
           
-          if (currentSection === 'modelAnswer' && !cleanLine.startsWith('**') && !cleanLine.startsWith('#')) {
+          if (currentSection === 'question' && !cleanLine.startsWith('**') && !cleanLine.startsWith('#')) {
+            currentQuestion.question += (currentQuestion.question ? ' ' : '') + cleanLine;
+          } else if (currentSection === 'modelAnswer' && !cleanLine.startsWith('**') && !cleanLine.startsWith('#')) {
             currentQuestion.modelAnswer += (currentQuestion.modelAnswer ? '\n' : '') + cleanLine;
           } else if (currentSection === 'keyPoints' && (cleanLine.startsWith('-') || cleanLine.startsWith('・'))) {
             currentQuestion.keyPoints.push(cleanLine.replace(/^[-・]\s*/, ''));
@@ -313,17 +81,12 @@
         }
       }
       
-      if (currentFollowUp && currentQuestion && currentFollowUp.answer) {
-        currentQuestion.followUpQA.push(currentFollowUp);
-        currentQuestion.followUpQuestions.push(currentFollowUp.question);
-      }
       if (currentQuestion && currentTheme) currentTheme.questions.push(currentQuestion);
       if (currentTheme && currentTheme.questions.length > 0) themes.push(currentTheme);
       
       return themes;
     };
 
-    // 追加質問回答集パーサー
     const parseFollowUpMarkdown = (markdown) => {
       const followUps = {};
       let currentQuestion = null;
@@ -356,228 +119,126 @@
 
     function App() {
       const [appMode, setAppMode] = useState('loading');
-      const [examType, setExamType] = useState('main');
+      
+      // 本編（questions.mdから読み込み）
       const [mainThemes, setMainThemes] = useState([]);
-      const [extraThemes, setExtraThemes] = useState([]);
+      // 追加問題編（followup.mdから読み込み）
+      const [additionalFollowUps, setAdditionalFollowUps] = useState({});
+      // カスタム問題（ユーザーが手動追加）
       const [customThemes, setCustomThemes] = useState([]);
-      const [followUpAnswers, setFollowUpAnswers] = useState({});
+      const [customFollowUps, setCustomFollowUps] = useState({});
+      
+      // 復習フォルダ
       const [reviewItems, setReviewItems] = useState([]);
-      const [loadError, setLoadError] = useState(null);
-      const [apiKey, setApiKey] = useState('');
-      const [showApiKeyInput, setShowApiKeyInput] = useState(false);
       
-      // 問題追加画面用
-      const [markdownInput, setMarkdownInput] = useState('');
-      const [parseResult, setParseResult] = useState(null);
-      const [parseError, setParseError] = useState(null);
-      const [addMode, setAddMode] = useState('markdown'); // 'markdown' or 'json'
-      const [jsonInput, setJsonInput] = useState('');
+      // 試験で使用するデータ（選択されたモードに基づく）
+      const [activeThemes, setActiveThemes] = useState([]);
+      const [activeFollowUps, setActiveFollowUps] = useState({});
+      const [examMode, setExamMode] = useState(null); // 'main', 'additional', 'custom', 'review'
       
-      // 試験画面用
+      // 試験状態
       const [gameState, setGameState] = useState('start');
       const [messages, setMessages] = useState([]);
       const [inputValue, setInputValue] = useState('');
       const [isLoading, setIsLoading] = useState(false);
       const [currentThemeIndex, setCurrentThemeIndex] = useState(0);
-      const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+      const [currentQuestionLevel, setCurrentQuestionLevel] = useState(0);
       const [completedThemes, setCompletedThemes] = useState([]);
       const [scores, setScores] = useState([]);
+      const [totalScore, setTotalScore] = useState(0);
+      const [followUpQuestion, setFollowUpQuestion] = useState(null);
       const [usedThemes, setUsedThemes] = useState([]);
       const [takeHomeCount, setTakeHomeCount] = useState(0);
       const [takeHomeThemes, setTakeHomeThemes] = useState([]);
       const [currentReviewIndex, setCurrentReviewIndex] = useState(0);
-      const [waitingForFollowUp, setWaitingForFollowUp] = useState(false);
-      const [currentFollowUp, setCurrentFollowUp] = useState(null);
       const MAX_TAKE_HOME = 2;
       
+      // 管理画面
+      const [adminTab, setAdminTab] = useState('themes');
+      const [newTheme, setNewTheme] = useState({
+        name: '',
+        questions: [
+          { level: '基本', question: '', modelAnswer: '', keyPoints: [''], followUpQuestions: [''] },
+          { level: '詳細', question: '', modelAnswer: '', keyPoints: [''], followUpQuestions: [''] },
+          { level: '応用', question: '', modelAnswer: '', keyPoints: [''], followUpQuestions: [''] }
+        ]
+      });
+      const [newFollowUp, setNewFollowUp] = useState({ question: '', answer: '' });
+      
       const messagesEndRef = useRef(null);
-
-      // 現在のテーマリスト
-      const getThemes = () => {
-        if (examType === 'main') return mainThemes;
-        if (examType === 'extra') return extraThemes;
-        if (examType === 'custom') return customThemes;
-        return [];
-      };
-      const themes = getThemes();
 
       // 初期化
       useEffect(() => {
         const loadData = async () => {
           try {
-            const savedReview = localStorage.getItem(STORAGE_KEY);
+            // localStorageから読み込み
+            const savedReview = localStorage.getItem(STORAGE_KEYS.review);
+            const savedCustomThemes = localStorage.getItem(STORAGE_KEYS.customThemes);
+            const savedCustomFollowUps = localStorage.getItem(STORAGE_KEYS.customFollowUps);
+            
             if (savedReview) setReviewItems(JSON.parse(savedReview));
+            if (savedCustomThemes) setCustomThemes(JSON.parse(savedCustomThemes));
+            if (savedCustomFollowUps) setCustomFollowUps(JSON.parse(savedCustomFollowUps));
             
-            const savedApiKey = localStorage.getItem(API_KEY_STORAGE);
-            if (savedApiKey) setApiKey(savedApiKey);
-            
-            const savedCustom = localStorage.getItem(CUSTOM_QUESTIONS_KEY);
-            if (savedCustom) setCustomThemes(JSON.parse(savedCustom));
-            
-            // 本編読み込み
-            const mainRes = await fetch('./data/questions_main.md').catch(() => null);
-            if (mainRes && mainRes.ok) {
-              const text = await mainRes.text();
-              const parsed = parseMainQuestionsMarkdown(text);
+            // マークダウンファイルを読み込み（本編）
+            const questionsRes = await fetch('./data/questions.md').catch(() => null);
+            if (questionsRes && questionsRes.ok) {
+              const text = await questionsRes.text();
+              const parsed = parseQuestionsMarkdown(text);
               if (parsed.length > 0) setMainThemes(parsed);
             }
             
-            // 追加問題読み込み
-            const extraRes = await fetch('./data/questions_extra.md').catch(() => null);
-            if (extraRes && extraRes.ok) {
-              const text = await extraRes.text();
-              const parsed = parseExtraQuestionsMarkdown(text);
-              if (parsed.length > 0) setExtraThemes(parsed);
-            }
-            
-            // 追加質問回答集読み込み
+            // マークダウンファイルを読み込み（追加問題編）
             const followUpRes = await fetch('./data/followup.md').catch(() => null);
             if (followUpRes && followUpRes.ok) {
               const text = await followUpRes.text();
               const parsed = parseFollowUpMarkdown(text);
-              if (Object.keys(parsed).length > 0) setFollowUpAnswers(parsed);
+              if (Object.keys(parsed).length > 0) setAdditionalFollowUps(parsed);
             }
             
             setAppMode('menu');
           } catch (err) {
             console.error('Load error:', err);
-            setLoadError(err.message);
             setAppMode('menu');
           }
         };
         loadData();
       }, []);
 
+      // データ保存
       useEffect(() => {
         if (appMode !== 'loading') {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(reviewItems));
+          localStorage.setItem(STORAGE_KEYS.review, JSON.stringify(reviewItems));
+          localStorage.setItem(STORAGE_KEYS.customThemes, JSON.stringify(customThemes));
+          localStorage.setItem(STORAGE_KEYS.customFollowUps, JSON.stringify(customFollowUps));
         }
-      }, [reviewItems, appMode]);
-
-      useEffect(() => {
-        localStorage.setItem(CUSTOM_QUESTIONS_KEY, JSON.stringify(customThemes));
-      }, [customThemes]);
+      }, [reviewItems, customThemes, customFollowUps, appMode]);
 
       const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
       useEffect(() => { scrollToBottom(); }, [messages]);
 
       const addMessage = (role, content) => setMessages(prev => [...prev, { role, content }]);
 
-      const saveApiKey = (key) => {
-        setApiKey(key);
-        localStorage.setItem(API_KEY_STORAGE, key);
-      };
-
-      // Markdownをパースしてプレビュー
-      const handleParseMarkdown = () => {
-        try {
-          const parsed = parseMainQuestionsMarkdown(markdownInput);
-          if (parsed.length === 0) {
-            setParseError('問題が見つかりませんでした。形式を確認してください。');
-            setParseResult(null);
-          } else {
-            setParseResult(parsed);
-            setParseError(null);
-          }
-        } catch (err) {
-          setParseError('パースエラー: ' + err.message);
-          setParseResult(null);
-        }
-      };
-
-      // パースした問題を保存
-      const handleSaveQuestions = () => {
-        if (!parseResult || parseResult.length === 0) return;
-        
-        const newThemes = parseResult.map((theme, idx) => ({
-          ...theme,
-          id: Date.now() + idx,
-          isCustom: true
-        }));
-        
-        setCustomThemes(prev => [...prev, ...newThemes]);
-        setMarkdownInput('');
-        setParseResult(null);
-        setAppMode('menu');
-      };
-
-      // JSONからインポート
-      const handleImportJson = () => {
-        try {
-          const parsed = JSON.parse(jsonInput);
-          if (!Array.isArray(parsed)) {
-            setParseError('JSONは配列形式である必要があります。');
-            return;
-          }
-          
-          const validThemes = parsed.filter(t => t.name && t.questions && t.questions.length > 0);
-          if (validThemes.length === 0) {
-            setParseError('有効なテーマが見つかりませんでした。');
-            return;
-          }
-          
-          const newThemes = validThemes.map((theme, idx) => ({
-            ...theme,
-            id: Date.now() + idx,
-            isCustom: true
-          }));
-          
-          setCustomThemes(prev => [...prev, ...newThemes]);
-          setJsonInput('');
-          setParseError(null);
-          setAppMode('menu');
-        } catch (err) {
-          setParseError('JSONパースエラー: ' + err.message);
-        }
-      };
-
-      // JSONとしてエクスポート
-      const handleExportJson = () => {
-        if (!parseResult) return;
-        const json = JSON.stringify(parseResult, null, 2);
-        navigator.clipboard.writeText(json);
-        alert('JSONをクリップボードにコピーしました！');
-      };
-
-      // カスタム問題を削除
-      const handleDeleteCustomTheme = (themeId) => {
-        if (confirm('このテーマを削除しますか？')) {
-          setCustomThemes(prev => prev.filter(t => t.id !== themeId));
-        }
-      };
-
       // 採点API
       const gradeAnswer = async (question, modelAnswer, keyPoints, userAnswer) => {
-        if (!apiKey) {
-          return { score: 5, feedback: '⚠️ APIキーが設定されていません。メニューから設定してください。' };
-        }
         try {
           const response = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-              "anthropic-dangerous-direct-browser-access": "true"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: "claude-sonnet-4-20250514",
               max_tokens: 1000,
-              system: GRADING_SYSTEM_PROMPT,
+              system: `あなたは労働衛生コンサルタント口述試験の採点者です。10点満点で採点してください。
+【採点基準】10点:完璧 8-9点:優秀 6-7点:合格 4-5点:一部正解 2-3点:方向性のみ 0-1点:的外れ
+必ず以下の形式で回答：
+点数: [0-10]
+講評: [100字以内]`,
               messages: [{
                 role: "user",
-                content: `【問題】${question}\n【模範解答】${modelAnswer}\n【評価ポイント】${keyPoints.join(', ')}\n【受験者の回答】${userAnswer}\n\n採点してください。`
+                content: `【問題】${question}\n【模範解答】${modelAnswer}\n【キーポイント】${(keyPoints || []).join(', ')}\n【受験者の回答】${userAnswer}\n\n採点してください。`
               }]
             })
           });
-          
-          if (!response.ok) {
-            if (response.status === 401) {
-              return { score: 5, feedback: '⚠️ APIキーが無効です。正しいキーを設定してください。' };
-            }
-            return { score: 5, feedback: `⚠️ APIエラー (${response.status})` };
-          }
-          
           const data = await response.json();
           const text = data.content[0].text;
           const scoreMatch = text.match(/点数[:：]\s*(\d+)/);
@@ -588,7 +249,7 @@
           };
         } catch (error) {
           console.error('Grading error:', error);
-          return { score: 5, feedback: '⚠️ 採点中にエラーが発生しました。' };
+          return { score: 5, feedback: '採点中にエラーが発生しました。' };
         }
       };
 
@@ -602,80 +263,99 @@
       };
 
       const selectNextTheme = () => {
-        const currentThemes = getThemes();
-        const availableThemes = currentThemes.filter((_, idx) => !usedThemes.includes(idx));
+        const availableThemes = activeThemes.filter((_, idx) => !usedThemes.includes(idx));
         if (availableThemes.length === 0) return null;
         const randomIndex = Math.floor(Math.random() * availableThemes.length);
         const theme = availableThemes[randomIndex];
-        const originalIndex = currentThemes.findIndex(t => t.id === theme.id);
+        const originalIndex = activeThemes.findIndex(t => t.id === theme.id);
         setUsedThemes(prev => [...prev, originalIndex]);
         setCurrentThemeIndex(originalIndex);
-        setCurrentQuestionIndex(0);
+        setCurrentQuestionLevel(0);
         return theme;
       };
 
       const getCurrentQuestion = () => {
-        const currentThemes = getThemes();
-        const theme = currentThemes[currentThemeIndex];
+        const theme = activeThemes[currentThemeIndex];
         if (!theme) return null;
-        return theme.questions[currentQuestionIndex];
+        return theme.questions[currentQuestionLevel];
       };
 
-      const startExam = (type) => {
-        setExamType(type);
+      // 試験開始（モード選択）
+      const startExam = (mode) => {
+        let themes = [];
+        let followUps = {};
+        
+        if (mode === 'main') {
+          themes = mainThemes;
+          // 本編用の追加質問（問題に紐づいているもの）
+          followUps = additionalFollowUps;
+        } else if (mode === 'additional') {
+          // 追加問題編：追加質問を問題として出題
+          themes = Object.entries(additionalFollowUps).map(([q, a], idx) => ({
+            id: idx + 1,
+            name: `追加質問 ${idx + 1}`,
+            questions: [{
+              level: '追加',
+              question: q,
+              modelAnswer: a,
+              keyPoints: a.split(/[、。]/).filter(s => s.length > 5).slice(0, 3),
+              followUpQuestions: []
+            }]
+          }));
+          followUps = {};
+        } else if (mode === 'custom') {
+          themes = customThemes;
+          followUps = customFollowUps;
+        }
+        
+        if (themes.length === 0) {
+          alert('問題がありません');
+          return;
+        }
+        
+        setActiveThemes(themes);
+        setActiveFollowUps(followUps);
+        setExamMode(mode);
         setAppMode('exam');
         setGameState('start');
         setMessages([]);
         setCurrentThemeIndex(0);
-        setCurrentQuestionIndex(0);
+        setCurrentQuestionLevel(0);
         setCompletedThemes([]);
         setScores([]);
+        setTotalScore(0);
+        setFollowUpQuestion(null);
         setUsedThemes([]);
         setTakeHomeCount(0);
         setTakeHomeThemes([]);
-        setWaitingForFollowUp(false);
-        setCurrentFollowUp(null);
         
-        let targetThemes;
-        let typeName;
-        if (type === 'main') {
-          targetThemes = mainThemes;
-          typeName = '本編（詳細解説付き）';
-        } else if (type === 'extra') {
-          targetThemes = extraThemes;
-          typeName = '追加問題編';
-        } else {
-          targetThemes = customThemes;
-          typeName = 'カスタム問題';
-        }
-        
-        const maxThemes = Math.min(5, targetThemes.length);
+        const maxThemes = Math.min(5, themes.length);
+        const modeLabel = mode === 'main' ? '本編' : mode === 'additional' ? '追加問題編' : 'カスタム問題';
         
         setTimeout(() => {
           setMessages([{
             role: 'examiner',
-            content: `📚 **${typeName}** を開始します
+            content: `**${modeLabel}モード**へようこそ。
 
 📋 **試験ルール**
 • ${maxThemes}つのテーマについて出題
 • 各問題は10点満点で採点
-• 6点以上で次の問題へ
-• 5点以下で補足質問のチャンス
+• 6点以上で次のレベルへ
+• 5点以下で補足質問（本編のみ）
 
-📦 **持ち帰りルール**
-• 「持ち帰り」は2回まで使用可能
-• 3回目で不合格
-
-✅ **合格基準**
-• 回答したテーマの60%以上
+📦 **持ち帰り**: 2回まで
+📚 **復習フォルダ**: 5点以下は自動保存
+✅ **合格基準**: 60%以上
 
 「開始」と入力してください。`
           }]);
         }, 100);
       };
 
+      // 復習モード
       const startReviewExam = () => {
         if (reviewItems.length === 0) return;
+        setExamMode('review');
         setAppMode('reviewExam');
         setCurrentReviewIndex(0);
         setMessages([]);
@@ -696,7 +376,6 @@ ${item.question}
       };
 
       const handleTakeHome = () => {
-        const currentThemes = getThemes();
         if (takeHomeCount >= MAX_TAKE_HOME) {
           setGameState('result');
           addMessage('user', '持ち帰らせていただきます。');
@@ -725,27 +404,26 @@ ${item.question}
       };
 
       const handleThemeComplete = (isTakeHome = false) => {
-        const currentThemes = getThemes();
         if (!isTakeHome) setCompletedThemes(prev => [...prev, currentThemeIndex]);
-        const maxThemes = Math.min(5, currentThemes.length);
+        const maxThemes = Math.min(5, activeThemes.length);
         
         if (usedThemes.length >= maxThemes) {
           setGameState('result');
           const validScores = scores.filter(s => {
-            const themeIdx = currentThemes.findIndex(t => t.name === s.theme);
+            const themeIdx = activeThemes.findIndex(t => t.name === s.theme);
             return !takeHomeThemes.includes(themeIdx);
           });
           const answeredThemeCount = maxThemes - takeHomeThemes.length - (isTakeHome ? 1 : 0);
-          const maxPossibleScore = validScores.length > 0 ? validScores.length * 10 : 1;
+          const maxPossibleScore = answeredThemeCount * (examMode === 'additional' ? 10 : 30);
           const actualScore = validScores.reduce((acc, s) => acc + s.score, 0);
-          const percentage = Math.round((actualScore / maxPossibleScore) * 100);
+          const percentage = maxPossibleScore > 0 ? Math.round((actualScore / maxPossibleScore) * 100) : 0;
           const passed = percentage >= 60;
           
           addMessage('examiner', `🎯 **試験終了**
 
 📊 **結果**
 回答：${answeredThemeCount}テーマ / 持ち帰り：${takeHomeThemes.length + (isTakeHome ? 1 : 0)}
-得点：${actualScore}点（${percentage}%）
+得点：${actualScore}/${maxPossibleScore}点（${percentage}%）
 
 **判定：${passed ? '🎉 合格' : '📚 不合格'}**
 
@@ -763,7 +441,6 @@ ${item.question}
       };
 
       const handleSend = async () => {
-        const currentThemes = getThemes();
         if (!inputValue.trim() || isLoading) return;
         const userInput = inputValue.trim();
         setInputValue('');
@@ -836,110 +513,151 @@ ${next.question}
               if (theme) {
                 setGameState('question');
                 const q = theme.questions[0];
-                addMessage('examiner', `📚 **テーマ ${usedThemes.length}/${Math.min(5, currentThemes.length)}：${theme.name}**
+                addMessage('examiner', `📚 **テーマ ${usedThemes.length}/${Math.min(5, activeThemes.length)}：${theme.name}**
 
 【${q.level}問題】${q.question}`);
               }
             }
           } else if (gameState === 'question') {
             const question = getCurrentQuestion();
-            if (!question) { setIsLoading(false); return; }
+            if (!question) return;
             
             const result = await gradeAnswer(question.question, question.modelAnswer, question.keyPoints, userInput);
-            const newScore = { theme: currentThemes[currentThemeIndex].name, level: question.level, score: result.score };
+            const newScore = { theme: activeThemes[currentThemeIndex].name, level: question.level, score: result.score, addedToReview: false };
             
             if (result.score <= 5) {
               addToReview({
-                themeName: currentThemes[currentThemeIndex].name,
+                themeName: activeThemes[currentThemeIndex].name,
                 level: question.level,
                 question: question.question,
                 modelAnswer: question.modelAnswer,
                 keyPoints: question.keyPoints,
-                score: result.score
+                userAnswer: userInput,
+                score: result.score,
+                feedback: result.feedback,
+                source: examMode
               });
+              newScore.addedToReview = true;
             }
             
             setScores(prev => [...prev, newScore]);
+            setTotalScore(prev => prev + result.score);
+            
+            const emoji = result.score >= 8 ? '🌟' : result.score >= 6 ? '✅' : '⚠️';
+            addMessage('examiner', `${emoji} **${result.score}点**
+${result.feedback}${result.score <= 5 ? '\n📚 復習フォルダに追加' : ''}
 
-            let responseText = `**${result.score >= 6 ? '✅' : '⚠️'} ${result.score}点**
-${result.feedback}
+📖 模範解答：${question.modelAnswer}`);
 
-📖 模範解答：${question.modelAnswer}`;
-
-            if (result.score <= 5 && question.followUpQuestions && question.followUpQuestions.length > 0) {
-              const followUpQ = question.followUpQuestions[Math.floor(Math.random() * question.followUpQuestions.length)];
-              
-              let followUpA = '';
-              if (question.followUpQA) {
-                const qa = question.followUpQA.find(qa => qa.question === followUpQ);
-                if (qa) followUpA = qa.answer;
-              }
-              if (!followUpA && followUpAnswers[followUpQ]) {
-                followUpA = followUpAnswers[followUpQ];
-              }
-              
-              setCurrentFollowUp({ question: followUpQ, answer: followUpA });
-              setWaitingForFollowUp(true);
-              
-              responseText += `
-
-📚 復習フォルダに追加
-
-💡 **補足質問**：${followUpQ}`;
-              
-              addMessage('examiner', responseText);
-              setGameState('followUp');
-            } else {
-              addMessage('examiner', responseText);
-              
-              setTimeout(() => {
-                if (currentQuestionIndex < currentThemes[currentThemeIndex].questions.length - 1) {
-                  setCurrentQuestionIndex(prev => prev + 1);
-                  const nextQ = currentThemes[currentThemeIndex].questions[currentQuestionIndex + 1];
-                  addMessage('examiner', `【${nextQ.level}問題】${nextQ.question}`);
+            setTimeout(() => {
+              if (result.score >= 6) {
+                if (currentQuestionLevel < 2 && activeThemes[currentThemeIndex].questions.length > currentQuestionLevel + 1) {
+                  setCurrentQuestionLevel(prev => prev + 1);
+                  const nextQ = activeThemes[currentThemeIndex].questions[currentQuestionLevel + 1];
+                  addMessage('examiner', `✨ 次へ！【${nextQ.level}問題】${nextQ.question}`);
                 } else {
                   handleThemeComplete();
                 }
-              }, 1500);
-            }
+              } else {
+                // 本編のみ補足質問
+                const followUp = examMode === 'main' ? question.followUpQuestions?.[0] : null;
+                if (followUp) {
+                  setFollowUpQuestion(followUp);
+                  setGameState('followUp');
+                  addMessage('examiner', `💡 補足質問：**${followUp}**`);
+                } else {
+                  handleThemeComplete();
+                }
+              }
+            }, 1500);
           } else if (gameState === 'followUp') {
-            const followUpResult = await gradeAnswer(
-              currentFollowUp.question, 
-              currentFollowUp.answer || '（模範解答なし）', 
-              [], 
-              userInput
-            );
+            const expectedAnswer = activeFollowUps[followUpQuestion] || '';
+            const result = await gradeAnswer(followUpQuestion, expectedAnswer || '適切な説明', [], userInput);
             
-            let followUpResponse = `**${followUpResult.score >= 6 ? '✅' : '⚠️'} ${followUpResult.score}点**
-${followUpResult.feedback}`;
-
-            if (currentFollowUp.answer) {
-              followUpResponse += `
-
-📖 模範解答：${currentFollowUp.answer}`;
+            if (result.score <= 5) {
+              addToReview({
+                themeName: activeThemes[currentThemeIndex].name,
+                level: '追加質問',
+                question: followUpQuestion,
+                modelAnswer: expectedAnswer || '（未登録）',
+                keyPoints: [],
+                userAnswer: userInput,
+                score: result.score,
+                feedback: result.feedback,
+                isFollowUp: true,
+                source: examMode
+              });
             }
-
-            addMessage('examiner', followUpResponse);
-            setWaitingForFollowUp(false);
-            setCurrentFollowUp(null);
             
+            addMessage('examiner', `**${result.score}点**
+${result.feedback}
+📖 模範解答：${expectedAnswer || '（未登録）'}`);
+
+            setFollowUpQuestion(null);
             setTimeout(() => {
-              if (currentQuestionIndex < currentThemes[currentThemeIndex].questions.length - 1) {
-                setCurrentQuestionIndex(prev => prev + 1);
-                const nextQ = currentThemes[currentThemeIndex].questions[currentQuestionIndex + 1];
+              if (result.score >= 6) {
                 setGameState('question');
-                addMessage('examiner', `【${nextQ.level}問題】${nextQ.question}`);
+                if (currentQuestionLevel < 2 && activeThemes[currentThemeIndex].questions.length > currentQuestionLevel + 1) {
+                  setCurrentQuestionLevel(prev => prev + 1);
+                  const nextQ = activeThemes[currentThemeIndex].questions[currentQuestionLevel + 1];
+                  addMessage('examiner', `✨ 次へ！【${nextQ.level}問題】${nextQ.question}`);
+                } else {
+                  handleThemeComplete();
+                }
               } else {
                 handleThemeComplete();
               }
             }, 1500);
           }
-        } catch (err) {
-          console.error(err);
+        } catch (error) {
+          console.error('Error:', error);
           addMessage('examiner', 'エラーが発生しました。');
         } finally {
           setIsLoading(false);
         }
+      };
+
+      // カスタム問題追加
+      const handleAddCustomTheme = () => {
+        if (!newTheme.name.trim()) {
+          alert('テーマ名を入力してください');
+          return;
+        }
+        const newId = Math.max(...customThemes.map(t => t.id), 0) + 1;
+        const themeToAdd = {
+          ...newTheme,
+          id: newId,
+          questions: newTheme.questions.map(q => ({
+            ...q,
+            keyPoints: q.keyPoints.filter(k => k.trim()),
+            followUpQuestions: q.followUpQuestions.filter(f => f.trim())
+          }))
+        };
+        setCustomThemes(prev => [...prev, themeToAdd]);
+        setNewTheme({
+          name: '',
+          questions: [
+            { level: '基本', question: '', modelAnswer: '', keyPoints: [''], followUpQuestions: [''] },
+            { level: '詳細', question: '', modelAnswer: '', keyPoints: [''], followUpQuestions: [''] },
+            { level: '応用', question: '', modelAnswer: '', keyPoints: [''], followUpQuestions: [''] }
+          ]
+        });
+        alert('追加しました');
+      };
+
+      const handleAddCustomFollowUp = () => {
+        if (!newFollowUp.question.trim() || !newFollowUp.answer.trim()) {
+          alert('質問と回答を入力してください');
+          return;
+        }
+        setCustomFollowUps(prev => ({ ...prev, [newFollowUp.question]: newFollowUp.answer }));
+        setNewFollowUp({ question: '', answer: '' });
+        alert('追加しました');
+      };
+
+      const handleDeleteCustomTheme = (id) => {
+        if (!confirm('削除しますか？')) return;
+        setCustomThemes(prev => prev.filter(t => t.id !== id));
       };
 
       // ローディング
@@ -954,411 +672,122 @@ ${followUpResult.feedback}`;
         );
       }
 
-      // 問題追加画面
-      if (appMode === 'addQuestion') {
-        return (
-          <div className="min-h-screen bg-slate-50">
-            <div className="bg-green-600 text-white p-4">
-              <div className="max-w-4xl mx-auto flex justify-between items-center">
-                <h1 className="text-xl font-bold">➕ 問題追加</h1>
-                <button onClick={() => setAppMode('menu')} className="bg-green-700 px-4 py-2 rounded-lg text-sm">
-                  戻る
-                </button>
-              </div>
-            </div>
-            
-            <div className="max-w-4xl mx-auto p-4">
-              {/* モード切り替え */}
-              <div className="flex gap-2 mb-4">
-                <button 
-                  onClick={() => setAddMode('markdown')}
-                  className={`px-4 py-2 rounded-lg font-medium ${addMode === 'markdown' ? 'bg-green-600 text-white' : 'bg-gray-200'}`}
-                >
-                  📝 Markdown入力
-                </button>
-                <button 
-                  onClick={() => setAddMode('json')}
-                  className={`px-4 py-2 rounded-lg font-medium ${addMode === 'json' ? 'bg-green-600 text-white' : 'bg-gray-200'}`}
-                >
-                  📋 JSONインポート
-                </button>
-              </div>
-              
-              {addMode === 'markdown' ? (
-                <>
-                  {/* Markdown入力 */}
-                  <div className="bg-white rounded-xl p-4 shadow mb-4">
-                    <div className="flex justify-between items-center mb-2">
-                      <h3 className="font-bold text-gray-800">Markdown入力</h3>
-                      <button 
-                        onClick={() => setMarkdownInput(SAMPLE_MARKDOWN)}
-                        className="text-sm text-blue-600 hover:underline"
-                      >
-                        テンプレートを挿入
-                      </button>
-                    </div>
-                    <textarea
-                      value={markdownInput}
-                      onChange={(e) => setMarkdownInput(e.target.value)}
-                      placeholder="## テーマX：テーマ名&#10;&#10;### 【予想問題 XX】Q1（基本問題）&#10;**質問文...**"
-                      className="w-full h-64 border rounded-lg p-3 text-sm markdown-input resize-y"
-                    />
-                    <div className="flex gap-2 mt-3">
-                      <button 
-                        onClick={handleParseMarkdown}
-                        disabled={!markdownInput.trim()}
-                        className="bg-blue-600 text-white px-4 py-2 rounded-lg disabled:bg-gray-300"
-                      >
-                        🔍 プレビュー
-                      </button>
-                      {parseResult && (
-                        <button 
-                          onClick={handleExportJson}
-                          className="bg-gray-600 text-white px-4 py-2 rounded-lg"
-                        >
-                          📋 JSONコピー
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {/* エラー表示 */}
-                  {parseError && (
-                    <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-red-700">
-                      ⚠️ {parseError}
-                    </div>
-                  )}
-                  
-                  {/* プレビュー */}
-                  {parseResult && (
-                    <div className="bg-white rounded-xl p-4 shadow mb-4">
-                      <h3 className="font-bold text-gray-800 mb-3">✅ パース結果（{parseResult.length}テーマ）</h3>
-                      <div className="space-y-3 max-h-96 overflow-y-auto">
-                        {parseResult.map((theme, idx) => (
-                          <div key={idx} className="border rounded-lg p-3">
-                            <div className="font-medium text-blue-700">{theme.name}</div>
-                            <div className="text-sm text-gray-600 mt-1">
-                              {theme.questions.length}問
-                              {theme.questions.map((q, qIdx) => (
-                                <span key={qIdx} className="ml-2 bg-gray-100 px-2 py-0.5 rounded text-xs">
-                                  {q.level}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="text-xs text-gray-500 mt-2">
-                              {theme.questions.map((q, qIdx) => (
-                                <div key={qIdx} className="truncate">
-                                  Q{qIdx+1}: {q.question.substring(0, 50)}...
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <button 
-                        onClick={handleSaveQuestions}
-                        className="mt-4 w-full bg-green-600 text-white py-3 rounded-lg font-bold"
-                      >
-                        💾 カスタム問題として保存
-                      </button>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  {/* JSONインポート */}
-                  <div className="bg-white rounded-xl p-4 shadow mb-4">
-                    <h3 className="font-bold text-gray-800 mb-2">JSON入力</h3>
-                    <textarea
-                      value={jsonInput}
-                      onChange={(e) => setJsonInput(e.target.value)}
-                      placeholder='[{"name": "テーマ名", "questions": [{"level": "基本", "question": "質問", "modelAnswer": "回答", "keyPoints": ["ポイント"]}]}]'
-                      className="w-full h-64 border rounded-lg p-3 text-sm markdown-input resize-y"
-                    />
-                    <button 
-                      onClick={handleImportJson}
-                      disabled={!jsonInput.trim()}
-                      className="mt-3 bg-green-600 text-white px-4 py-2 rounded-lg disabled:bg-gray-300"
-                    >
-                      📥 インポート
-                    </button>
-                  </div>
-                  
-                  {parseError && (
-                    <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-red-700">
-                      ⚠️ {parseError}
-                    </div>
-                  )}
-                </>
-              )}
-              
-              {/* フォーマット説明 */}
-              <div className="bg-blue-50 rounded-xl p-4 text-sm text-blue-800">
-                <h4 className="font-bold mb-2">📖 Markdownフォーマット</h4>
-                <pre className="text-xs bg-white p-3 rounded overflow-x-auto">
-{`## テーマX：テーマ名
-
-### 【予想問題 XX】Q1（基本問題）
-**質問文をここに**
-
-### 【模範解答】
-模範解答をここに
-
-### 【この問題で試験官が見ているポイント】
-- ポイント1
-- ポイント2
-
-### 【想定される追加質問と回答】
-
-**Q：追加質問**
-
-**A：** 回答`}
-                </pre>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      // カスタム問題管理画面
-      if (appMode === 'manageCustom') {
-        return (
-          <div className="min-h-screen bg-slate-50">
-            <div className="bg-purple-600 text-white p-4">
-              <div className="max-w-4xl mx-auto flex justify-between items-center">
-                <h1 className="text-xl font-bold">⚙️ カスタム問題管理</h1>
-                <button onClick={() => setAppMode('menu')} className="bg-purple-700 px-4 py-2 rounded-lg text-sm">
-                  戻る
-                </button>
-              </div>
-            </div>
-            
-            <div className="max-w-4xl mx-auto p-4">
-              {customThemes.length === 0 ? (
-                <div className="bg-white rounded-xl p-8 shadow text-center">
-                  <span className="text-5xl mb-4 block">📭</span>
-                  <p className="text-gray-600">カスタム問題はありません</p>
-                  <button 
-                    onClick={() => setAppMode('addQuestion')}
-                    className="mt-4 bg-green-600 text-white px-6 py-2 rounded-lg"
-                  >
-                    ➕ 問題を追加
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <div className="flex justify-between mb-4">
-                    <p className="text-gray-600">{customThemes.length}テーマ</p>
-                    <button 
-                      onClick={() => {
-                        const json = JSON.stringify(customThemes, null, 2);
-                        navigator.clipboard.writeText(json);
-                        alert('全カスタム問題をJSONでコピーしました！');
-                      }}
-                      className="text-blue-600 text-sm hover:underline"
-                    >
-                      📋 全てJSONでコピー
-                    </button>
-                  </div>
-                  <div className="space-y-3">
-                    {customThemes.map(theme => (
-                      <div key={theme.id} className="bg-white rounded-xl p-4 shadow">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <div className="font-bold text-purple-700">{theme.name}</div>
-                            <div className="text-sm text-gray-600 mt-1">
-                              {theme.questions.length}問
-                            </div>
-                          </div>
-                          <button 
-                            onClick={() => handleDeleteCustomTheme(theme.id)}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            🗑️ 削除
-                          </button>
-                        </div>
-                        <div className="mt-2 text-xs text-gray-500">
-                          {theme.questions.map((q, idx) => (
-                            <div key={idx} className="truncate">
-                              [{q.level}] {q.question.substring(0, 40)}...
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        );
-      }
-
       // メニュー
       if (appMode === 'menu') {
+        const mainCount = mainThemes.reduce((a, t) => a + t.questions.length, 0);
+        const additionalCount = Object.keys(additionalFollowUps).length;
+        const customCount = customThemes.reduce((a, t) => a + t.questions.length, 0);
+        
         return (
           <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-            <div className="max-w-2xl mx-auto pt-4">
-              <div className="text-center mb-5">
+            <div className="max-w-2xl mx-auto pt-6">
+              <div className="text-center mb-6">
                 <h1 className="text-2xl font-bold text-blue-900 mb-1">労働衛生コンサルタント</h1>
                 <p className="text-lg text-blue-700">口述試験対策システム</p>
               </div>
-              
-              {loadError && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 mb-4 text-sm text-yellow-800">
-                  ⚠️ データファイルの読み込みに一部失敗しました。
-                </div>
-              )}
               
               <div className="space-y-3">
                 {/* 本編 */}
                 <button 
                   onClick={() => startExam('main')} 
                   disabled={mainThemes.length === 0}
-                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-2xl p-4 text-left shadow-lg"
+                  className="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-300 text-white rounded-2xl p-5 text-left shadow-lg relative"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">📝</span>
-                    <div className="flex-1">
-                      <h2 className="text-lg font-bold">本編（詳細解説付き）</h2>
-                      <p className="text-blue-200 text-xs">基本→詳細→応用の3段階構成</p>
+                  <div className="flex items-center gap-4">
+                    <span className="text-3xl">📄</span>
+                    <div>
+                      <h2 className="text-xl font-bold">本編（詳細解説付き）</h2>
+                      <p className="text-gray-200 text-sm">基本→詳細→応用の3段階構成</p>
                     </div>
-                    <span className="bg-blue-500 px-3 py-1 rounded-full text-sm">
-                      {mainThemes.length}
-                    </span>
                   </div>
+                  <span className="absolute top-4 right-4 bg-blue-500 text-white text-sm font-bold px-3 py-1 rounded-full">
+                    {mainCount}
+                  </span>
                 </button>
                 
                 {/* 追加問題編 */}
                 <button 
-                  onClick={() => startExam('extra')} 
-                  disabled={extraThemes.length === 0}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white rounded-2xl p-4 text-left shadow-lg"
+                  onClick={() => startExam('additional')} 
+                  disabled={additionalCount === 0}
+                  className="w-full bg-gray-500 hover:bg-gray-600 disabled:bg-gray-300 text-white rounded-2xl p-5 text-left shadow-lg relative"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">📋</span>
-                    <div className="flex-1">
-                      <h2 className="text-lg font-bold">追加問題編</h2>
-                      <p className="text-indigo-200 text-xs">補足的な問題で知識を補強</p>
+                  <div className="flex items-center gap-4">
+                    <span className="text-3xl">📝</span>
+                    <div>
+                      <h2 className="text-xl font-bold">追加問題編</h2>
+                      <p className="text-gray-200 text-sm">補足的な問題で知識を補強</p>
                     </div>
-                    <span className="bg-indigo-500 px-3 py-1 rounded-full text-sm">
-                      {extraThemes.length}
-                    </span>
                   </div>
+                  <span className="absolute top-4 right-4 bg-blue-500 text-white text-sm font-bold px-3 py-1 rounded-full">
+                    {additionalCount}
+                  </span>
                 </button>
                 
                 {/* カスタム問題 */}
                 <button 
                   onClick={() => startExam('custom')} 
                   disabled={customThemes.length === 0}
-                  className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white rounded-2xl p-4 text-left shadow-lg"
+                  className="w-full bg-purple-500 hover:bg-purple-600 disabled:bg-purple-300 text-white rounded-2xl p-5 text-left shadow-lg relative"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">✨</span>
-                    <div className="flex-1">
-                      <h2 className="text-lg font-bold">カスタム問題</h2>
-                      <p className="text-purple-200 text-xs">自分で追加した問題</p>
+                  <div className="flex items-center gap-4">
+                    <span className="text-3xl">✨</span>
+                    <div>
+                      <h2 className="text-xl font-bold">カスタム問題</h2>
+                      <p className="text-purple-200 text-sm">自分で追加した問題</p>
                     </div>
-                    <span className="bg-purple-500 px-3 py-1 rounded-full text-sm">
-                      {customThemes.length}
-                    </span>
                   </div>
+                  <span className="absolute top-4 right-4 bg-white text-purple-600 text-sm font-bold px-3 py-1 rounded-full">
+                    {customCount}
+                  </span>
                 </button>
                 
                 {/* 復習フォルダ */}
                 <button 
                   onClick={() => setAppMode('review')} 
-                  className="w-full bg-amber-500 hover:bg-amber-600 text-white rounded-2xl p-4 text-left shadow-lg relative"
+                  className="w-full bg-amber-500 hover:bg-amber-600 text-white rounded-2xl p-5 text-left shadow-lg relative"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">📚</span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-3xl">📚</span>
                     <div>
-                      <h2 className="text-lg font-bold">復習フォルダ</h2>
-                      <p className="text-amber-100 text-xs">5点以下の問題を復習</p>
+                      <h2 className="text-xl font-bold">復習フォルダ</h2>
+                      <p className="text-amber-100 text-sm">5点以下の問題を復習</p>
                     </div>
                   </div>
                   {reviewItems.length > 0 && (
-                    <span className="absolute top-3 right-3 bg-red-500 text-white text-sm font-bold px-3 py-1 rounded-full">
+                    <span className="absolute top-4 right-4 bg-red-500 text-white text-sm font-bold px-3 py-1 rounded-full">
                       {reviewItems.length}
                     </span>
                   )}
                 </button>
               </div>
               
-              {/* 問題追加・管理 */}
+              {/* 管理ボタン */}
               <div className="mt-4 flex gap-2">
                 <button 
-                  onClick={() => { setAppMode('addQuestion'); setParseResult(null); setParseError(null); }}
-                  className="flex-1 bg-green-600 hover:bg-green-700 text-white rounded-xl p-3 shadow"
+                  onClick={() => setAppMode('admin')} 
+                  className="flex-1 bg-white hover:bg-gray-50 text-gray-700 rounded-xl p-3 shadow text-sm font-medium"
                 >
-                  <span className="text-lg">➕</span>
-                  <span className="ml-2 font-medium">問題追加</span>
-                </button>
-                <button 
-                  onClick={() => setAppMode('manageCustom')}
-                  className="flex-1 bg-gray-600 hover:bg-gray-700 text-white rounded-xl p-3 shadow"
-                >
-                  <span className="text-lg">⚙️</span>
-                  <span className="ml-2 font-medium">カスタム管理</span>
+                  ⚙️ カスタム問題を管理
                 </button>
               </div>
               
               {/* 統計 */}
-              <div className="mt-4 grid grid-cols-4 gap-2">
-                <div className="bg-white rounded-xl p-2 shadow text-center">
-                  <div className="text-xl font-bold text-blue-600">{mainThemes.length}</div>
-                  <div className="text-gray-500 text-xs">本編</div>
-                </div>
-                <div className="bg-white rounded-xl p-2 shadow text-center">
-                  <div className="text-xl font-bold text-indigo-600">{extraThemes.length}</div>
-                  <div className="text-gray-500 text-xs">追加</div>
-                </div>
-                <div className="bg-white rounded-xl p-2 shadow text-center">
-                  <div className="text-xl font-bold text-purple-600">{customThemes.length}</div>
-                  <div className="text-gray-500 text-xs">カスタム</div>
-                </div>
-                <div className="bg-white rounded-xl p-2 shadow text-center">
-                  <div className="text-xl font-bold text-amber-600">{reviewItems.length}</div>
-                  <div className="text-gray-500 text-xs">復習</div>
-                </div>
-              </div>
-              
-              {/* APIキー設定 */}
-              <div className="mt-4 bg-white rounded-xl p-3 shadow">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-bold text-gray-800 text-sm">🔑 APIキー</h3>
-                  <button 
-                    onClick={() => setShowApiKeyInput(!showApiKeyInput)}
-                    className="text-blue-600 text-sm hover:underline"
-                  >
-                    {showApiKeyInput ? '閉じる' : (apiKey ? '変更' : '設定')}
-                  </button>
-                </div>
-                
-                {apiKey && !showApiKeyInput && (
-                  <p className="text-green-600 text-xs mt-1">✅ 設定済み</p>
-                )}
-                
-                {!apiKey && !showApiKeyInput && (
-                  <p className="text-amber-600 text-xs mt-1">⚠️ AI採点にはAPIキーが必要</p>
-                )}
-                
-                {showApiKeyInput && (
-                  <div className="mt-2">
-                    <input
-                      type="password"
-                      placeholder="sk-ant-api03-..."
-                      defaultValue={apiKey}
-                      className="w-full border rounded-lg px-3 py-2 text-sm"
-                      onBlur={(e) => saveApiKey(e.target.value)}
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      <a href="https://console.anthropic.com/settings/keys" target="_blank" className="text-blue-600 hover:underline">
-                        Anthropic Console
-                      </a> で取得
-                    </p>
+              <div className="mt-4 bg-white rounded-xl p-4 shadow">
+                <h3 className="font-bold text-gray-800 mb-2 text-sm">📊 登録状況</h3>
+                <div className="grid grid-cols-3 gap-2 text-center text-sm">
+                  <div>
+                    <div className="text-xl font-bold text-gray-600">{mainThemes.length}</div>
+                    <div className="text-gray-500 text-xs">本編テーマ</div>
                   </div>
-                )}
+                  <div>
+                    <div className="text-xl font-bold text-gray-600">{additionalCount}</div>
+                    <div className="text-gray-500 text-xs">追加問題</div>
+                  </div>
+                  <div>
+                    <div className="text-xl font-bold text-purple-600">{customThemes.length}</div>
+                    <div className="text-gray-500 text-xs">カスタム</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1396,6 +825,13 @@ ${followUpResult.feedback}`;
                       <div key={item.id} className="bg-white rounded-xl p-4 shadow">
                         <div className="flex justify-between">
                           <div>
+                            <span className={`text-xs px-2 py-1 rounded mr-2 ${
+                              item.source === 'main' ? 'bg-gray-100 text-gray-700' :
+                              item.source === 'additional' ? 'bg-blue-100 text-blue-700' :
+                              'bg-purple-100 text-purple-700'
+                            }`}>
+                              {item.source === 'main' ? '本編' : item.source === 'additional' ? '追加' : 'カスタム'}
+                            </span>
                             <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded mr-2">{item.level}</span>
                             <span className="font-medium">{item.themeName}</span>
                           </div>
@@ -1415,23 +851,170 @@ ${followUpResult.feedback}`;
         );
       }
 
+      // 管理画面
+      if (appMode === 'admin') {
+        return (
+          <div className="min-h-screen bg-slate-50">
+            <div className="bg-gray-700 text-white p-4">
+              <div className="max-w-4xl mx-auto flex justify-between items-center">
+                <h1 className="text-xl font-bold">⚙️ カスタム問題管理</h1>
+                <button onClick={() => setAppMode('menu')} className="bg-gray-600 px-4 py-2 rounded-lg text-sm">
+                  戻る
+                </button>
+              </div>
+            </div>
+            <div className="max-w-4xl mx-auto p-4">
+              <div className="flex gap-2 mb-4">
+                <button
+                  onClick={() => setAdminTab('themes')}
+                  className={`px-4 py-2 rounded-lg ${adminTab === 'themes' ? 'bg-purple-600 text-white' : 'bg-white text-gray-700'}`}
+                >
+                  📝 テーマ追加
+                </button>
+                <button
+                  onClick={() => setAdminTab('list')}
+                  className={`px-4 py-2 rounded-lg ${adminTab === 'list' ? 'bg-purple-600 text-white' : 'bg-white text-gray-700'}`}
+                >
+                  📋 一覧
+                </button>
+                <button
+                  onClick={() => setAdminTab('followup')}
+                  className={`px-4 py-2 rounded-lg ${adminTab === 'followup' ? 'bg-purple-600 text-white' : 'bg-white text-gray-700'}`}
+                >
+                  💬 追加質問
+                </button>
+              </div>
+
+              {adminTab === 'themes' && (
+                <div className="bg-white rounded-xl p-6 shadow">
+                  <h2 className="text-xl font-bold mb-4">新しいテーマを追加</h2>
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">テーマ名</label>
+                    <input
+                      type="text"
+                      value={newTheme.name}
+                      onChange={(e) => setNewTheme({ ...newTheme, name: e.target.value })}
+                      className="w-full border rounded-lg px-4 py-2"
+                      placeholder="例: 化学物質管理"
+                    />
+                  </div>
+                  {newTheme.questions.map((q, qIdx) => (
+                    <div key={qIdx} className="mb-6 p-4 bg-gray-50 rounded-xl">
+                      <h3 className="font-bold mb-3 text-gray-700">【{q.level}問題】</h3>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">問題文</label>
+                          <textarea
+                            value={q.question}
+                            onChange={(e) => {
+                              const updated = [...newTheme.questions];
+                              updated[qIdx].question = e.target.value;
+                              setNewTheme({ ...newTheme, questions: updated });
+                            }}
+                            className="w-full border rounded-lg px-4 py-2 h-20"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">模範解答</label>
+                          <textarea
+                            value={q.modelAnswer}
+                            onChange={(e) => {
+                              const updated = [...newTheme.questions];
+                              updated[qIdx].modelAnswer = e.target.value;
+                              setNewTheme({ ...newTheme, questions: updated });
+                            }}
+                            className="w-full border rounded-lg px-4 py-2 h-24"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button onClick={handleAddCustomTheme} className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-xl font-bold">
+                    テーマを追加
+                  </button>
+                </div>
+              )}
+
+              {adminTab === 'list' && (
+                <div className="space-y-3">
+                  {customThemes.length === 0 ? (
+                    <div className="bg-white rounded-xl p-8 shadow text-center">
+                      <p className="text-gray-500">カスタム問題はまだありません</p>
+                    </div>
+                  ) : (
+                    customThemes.map((theme) => (
+                      <div key={theme.id} className="bg-white rounded-xl p-4 shadow">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-bold text-gray-800">{theme.name}</h3>
+                          <button onClick={() => handleDeleteCustomTheme(theme.id)} className="text-red-500 text-sm">
+                            削除
+                          </button>
+                        </div>
+                        <p className="text-gray-500 text-sm mt-1">{theme.questions.length}問</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {adminTab === 'followup' && (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-xl p-6 shadow">
+                    <h2 className="text-xl font-bold mb-4">追加質問の回答を登録</h2>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">質問</label>
+                        <input
+                          type="text"
+                          value={newFollowUp.question}
+                          onChange={(e) => setNewFollowUp({ ...newFollowUp, question: e.target.value })}
+                          className="w-full border rounded-lg px-4 py-2"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">模範解答</label>
+                        <textarea
+                          value={newFollowUp.answer}
+                          onChange={(e) => setNewFollowUp({ ...newFollowUp, answer: e.target.value })}
+                          className="w-full border rounded-lg px-4 py-2 h-24"
+                        />
+                      </div>
+                      <button onClick={handleAddCustomFollowUp} className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg">
+                        登録
+                      </button>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-6 shadow">
+                    <h3 className="font-bold mb-3">登録済み（{Object.keys(customFollowUps).length}件）</h3>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {Object.entries(customFollowUps).map(([q, a], idx) => (
+                        <div key={idx} className="bg-gray-50 rounded-lg p-3 text-sm">
+                          <p className="font-medium">Q: {q}</p>
+                          <p className="text-gray-600 mt-1">A: {a.substring(0, 80)}...</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
       // 試験画面
-      const currentThemes = getThemes();
-      const maxThemes = Math.min(5, currentThemes.length);
+      const maxThemes = Math.min(5, activeThemes.length);
       const canTakeHome = appMode === 'exam' && (gameState === 'question' || gameState === 'followUp');
       const isReviewMode = appMode === 'reviewExam';
-      const headerColor = isReviewMode ? 'bg-amber-500' : 
-                         (examType === 'main' ? 'bg-blue-700' : 
-                         (examType === 'extra' ? 'bg-indigo-700' : 'bg-purple-700'));
       
       return (
         <div className="flex flex-col h-screen bg-slate-50">
-          <div className={`${headerColor} text-white p-4`}>
+          <div className={`${isReviewMode ? 'bg-amber-500' : examMode === 'custom' ? 'bg-purple-600' : 'bg-gray-600'} text-white p-4`}>
             <div className="max-w-4xl mx-auto flex justify-between items-center">
               <h1 className="font-bold">
                 {isReviewMode ? '📚 復習モード' : 
-                 (examType === 'main' ? '📝 本編' : 
-                 (examType === 'extra' ? '📋 追加問題編' : '✨ カスタム問題'))}
+                 examMode === 'main' ? '📄 本編' : 
+                 examMode === 'additional' ? '📝 追加問題編' : '✨ カスタム問題'}
               </h1>
               {!isReviewMode && (
                 <div className="text-sm">
@@ -1471,7 +1054,7 @@ ${followUpResult.feedback}`;
 
           <div className="bg-white border-t p-4">
             <div className="max-w-4xl mx-auto flex gap-2">
-              {canTakeHome && takeHomeCount < MAX_TAKE_HOME && (
+              {canTakeHome && (
                 <button onClick={handleTakeHome} disabled={isLoading}
                   className="px-4 py-3 rounded-xl font-semibold bg-amber-100 text-amber-700 border-2 border-amber-300">
                   📦 持ち帰り
@@ -1491,7 +1074,7 @@ ${followUpResult.feedback}`;
                 送信
               </button>
             </div>
-            <p className="text-xs text-gray-500 mt-2 text-center">「メニュー」と入力でメインメニューへ</p>
+            <p className="text-xs text-gray-500 mt-2 text-center">「メニュー」で戻る</p>
           </div>
         </div>
       );
